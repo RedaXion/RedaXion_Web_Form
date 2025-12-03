@@ -9,7 +9,6 @@ jobs:
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
-      # agrega más env si las añadiste: ASSEMBLYAI_API_KEY, REDIS_URL, etc.
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -19,11 +18,14 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install deps
+      - name: Install deps (ensure openai v1+)
         run: |
           python -m pip install --upgrade pip
+          # Install new OpenAI client (v1+). Use a concrete recent version to avoid surprises:
+          pip install "openai>=1.0.0"
+          # then install project deps (if any)
           if [ -f requirements.txt ]; then pip install -r requirements.txt || true; fi
-          pip install openai backoff requests || true
+          pip install backoff requests redis sendgrid || true
 
       - name: Run process_txt test
         run: |
