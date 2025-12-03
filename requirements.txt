@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+python-multipart
+requests
+google-cloud-storage
+gspread
+oauth2client
+python-docx
+openai
+redis
+rq
+assemblyai
+python-dotenv
