@@ -135,33 +135,62 @@ def backoff_handler(details):
 
 # Evitar referenciar openai.error.* en tiempo de import — usar Exception para compatibilidad
 @backoff.on_exception(backoff.expo, (Exception,), max_tries=5, on_backoff=backoff_handler)
+# backoff-compatible wrapper that uses the new OpenAI python client (v1+).
+# If the new client is not available, it raises a clear error explaining the cause.
+@backoff.on_exception(backoff.expo, (Exception,), max_tries=5, on_backoff=backoff_handler)
 def call_openai_chat(messages, model=OPENAI_MODEL, temperature=0.1, max_tokens=16000):
     """
-    Llama a la API de OpenAI (ChatCompletion). Usa reintentos para RateLimit y transient errors.
-    Ajusta "max_tokens" si tu modelo lo permite. Si usas 'gpt-5' con mayor contexto, sube el max.
+    Llama a la API de OpenAI usando la interfaz v1+ (OpenAI().chat.completions.create).
+    No intenta llamar a la API legacy (openai.ChatCompletion) porque esa interfaz fue removida.
     """
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY no configurada en variables de entorno.")
 
-    # Intentar la llamada (sincrónica)
     logger.info(f"[OPENAI] Llamando modelo={model} con temperature={temperature}")
-    response = openai.ChatCompletion.create(
-        model=model,
-        messages=messages,
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
-    # tomar el primer choice
-    # manejar compatibilidad con diferentes versiones del SDK
+
+    # Intentar usar la nueva interfaz (openai>=1.0.0)
     try:
-        text = response.choices[0].message["content"]
-    except Exception:
-        # fallback: intentar otra estructura posible
+        # Import local para evitar fallos en tiempo de import si la versión no lo soporta
         try:
-            text = response["choices"][0]["message"]["content"]
+            from openai import OpenAI as OpenAIClient
         except Exception:
-            text = str(response)
-    return text
+            # En algunas instalaciones la clase está en openai.OpenAI (alias); intentar importar directamente
+            import openai as _openai_mod
+            OpenAIClient = getattr(_openai_mod, "OpenAI", None)
+            if OpenAIClient is None:
+                raise ImportError("El cliente OpenAI (OpenAI) no está disponible en el paquete 'openai' instalado.")
+
+        client = OpenAIClient(api_key=OPENAI_API_KEY)
+        resp = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+        # Extraer el contenido de forma robusta
+        try:
+            # Forma objeto: resp.choices[0].message.content
+            return resp.choices[0].message.content
+        except Exception:
+            pass
+        try:
+            # Forma dict-like: resp["choices"][0]["message"]["content"]
+            return resp["choices"][0]["message"]["content"]
+        except Exception:
+            pass
+        # Si no pudimos extraer, devolver string del objeto
+        return str(resp)
+
+    except Exception as exc_new:
+        # Mensaje claro para el usuario/CI
+        logger.exception("Llamada a OpenAI (v1+) falló: %s", exc_new)
+        raise RuntimeError(
+            "Fallo al usar la nueva API de OpenAI (openai>=1.0). "
+            "Asegúrate de que la librería 'openai' instalada en el entorno soporte la interfaz v1 (OpenAI().chat.completions.create). "
+            "Si no deseas migrar ahora, como alternativa podrías pinnear la versión antigua añadiendo `pip install openai==0.28` en tu CI/workflow."
+        ) from exc_new
+
 
 def procesar_txt_con_chatgpt_block(block_text: str, order_id: typing.Optional[str]=None, block_index: int=1, total_blocks: typing.Optional[int]=None, model: typing.Optional[str]=None):
     """
