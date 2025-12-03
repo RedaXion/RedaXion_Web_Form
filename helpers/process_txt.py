@@ -182,7 +182,9 @@ def procesar_txt_con_chatgpt_block(block_text: str, order_id: typing.Optional[st
         logger.error(f"[PROCESS_TXT][ERROR] al procesar bloque {block_index}: {e}")
         logger.exception(e)
         # En caso de error, devolver un fallback que preserve el texto original (con marca de error)
-        fallback = f"## ERROR: fallo en el procesamiento automático del bloque {block_index}\n\n" \
-                   "El contenido original se incluye a continuación sin cambios.\n\n" \
-                   f"{block_text[:10000]}\n\n"  # limitar tamaño
+        fallback = (
+            f"## ERROR: fallo en el procesamiento automático del bloque {block_index}\n\n"
+            "El contenido original se incluye a continuación sin cambios.\n\n"
+            f"{block_text[:10000]}\n\n"  # limitar tamaño
+        )
         return fallback
