@@ -4,6 +4,7 @@ import logging
 from typing import Optional
 
 logger = logging.getLogger("generar_quiz")
+logger.setLevel(logging.INFO)
 
 # lectura de env (se conservan por trazabilidad, pero el wrapper valida la API key)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -20,6 +21,7 @@ try:
 except Exception as e:
     chat_completion = None
     logger.warning("helpers.openai_client.chat_completion no disponible: %s", e)
+
 
 QUIZ_PROMPT_TEMPLATE = """
 Eres un generador de preguntas de examen estilo EUNACOM (alta dificultad).
@@ -41,13 +43,17 @@ Texto:
 Responde SOLO con las preguntas y el solucionario.
 """
 
-def generar_quiz_from_text(content: str, order_id: Optional[str]=None, block_index: Optional[int]=None, model: Optional[str]=None) -> str:
+
+def generar_quiz_from_text(content: str,
+                           order_id: Optional[str] = None,
+                           block_index: Optional[int] = None,
+                           model: Optional[str] = None) -> str:
     """
     Genera un quiz (7 preguntas) usando la función central chat_completion.
     - content: texto a partir del cual generar las preguntas.
     - order_id/block_index: opcionales, para guardar un artifact en /tmp.
     - model: opcional para sobreescribir OPENAI_MODEL.
-    Devuelve el texto (preguntas + solucionario).
+    Devuelve el texto (preguntas + solucionario) o texto de error (string).
     """
     model_to_use = model or OPENAI_MODEL
 
@@ -56,18 +62,19 @@ def generar_quiz_from_text(content: str, order_id: Optional[str]=None, block_ind
             "helpers.openai_client.chat_completion no disponible. "
             "Por favor crea helpers/openai_client.py o revisa la instalación del cliente OpenAI."
         )
-    if not OPENAI_API_KEY:
-        raise RuntimeError("OPENAI_API_KEY no configurada en variables de entorno.")
 
     prompt = QUIZ_PROMPT_TEMPLATE.format(content=content)
     logger.info("Generando quiz (order=%s block=%s model=%s)", order_id, block_index, model_to_use)
 
     try:
         messages = [
-            {"role": "system", "content": "Generador de preguntas EUNACOM."},
+            {"role": "system", "content": "Generador de preguntas EUNACOM (alta dificultad)."},
             {"role": "user", "content": prompt}
         ]
-        text = chat_completion(messages, model=model_to_use, temperature=0.0, max_tokens=1500)
+
+        # Usar temperature=None para que el wrapper decida (evita errores por modelos restrictivos)
+        # max_tokens ajustado a 1500 para respuestas de quiz razonablemente largas
+        text = chat_completion(messages, model=model_to_use, temperature=None, max_tokens=1500)
         text = text.strip() if isinstance(text, str) else str(text)
 
         # guardar artifact si tenemos order_id y block_index
@@ -91,7 +98,7 @@ def generar_quiz_from_text(content: str, order_id: Optional[str]=None, block_ind
             try:
                 filename = f"/tmp/{order_id}_block_{block_index}_quiz_error.txt"
                 with open(filename, "w", encoding="utf-8") as fh:
-                    fh.write(fallback + "\n\n" + str(e))
+                    fh.write(fallback + "\n\n" + repr(e))
                 logger.info("Artifact de error guardado en %s", filename)
             except Exception:
                 logger.exception("No se pudo guardar artifact de error")
