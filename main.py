@@ -18,6 +18,7 @@ import tempfile
 import traceback
 import shutil
 import json
+import requests
 from datetime import datetime, timedelta
 
 # Intentar importar tus helpers (estructura original). Si están en 'helpers.*' ajustamos.
@@ -161,7 +162,8 @@ def call_chatgpt_for_block(block_text: str, block_index: int, order_id: str, tot
             result = procesar_txt_con_chatgpt_block(block_text, order_id=order_id, block_index=block_index, total_blocks=total_blocks)
         else:
             print("[CHATGPT][STUB] helper procesar_txt_con_chatgpt_block no disponible. Usando stub.")
-            result = f"## Bloque {block_index}\n\n" + block_text[:2000] + "\n\n"
+            sample = block_text[:5000] if len(block_text) > 5000 else block_text
+            result = f"## Bloque {block_index}\n\n" + sample + "\n\n"
 
         # Guardar salida parcial en archivo (útil para revisar si algo falla)
         try:
@@ -366,39 +368,38 @@ def generate_and_deliver(order_id, *args, **kwargs):
 
         print(f"[MAIN] Audio público: {audio_url_public}")
 
-# 3) Obtener texto: si la URL termina en .txt -> descargar el texto; si no, usar AssemblyAI
-try:
-    print("[MAIN] Obteniendo texto de la fuente (AssemblyAI o .txt directo)...")
-    texto = None
+        # 3) Obtener texto: si la URL termina en .txt -> descargar el texto; si no, usar AssemblyAI
+        try:
+            print("[MAIN] Obteniendo texto de la fuente (AssemblyAI o .txt directo)...")
+            texto = None
 
-    # heurística: si la URL apunta a un .txt públicamente accesible, lo descargamos y lo usamos
-    try:
-        if isinstance(audio_url_public, str) and audio_url_public.lower().endswith('.txt'):
-            import requests
-            print(f"[MAIN] audio_url apunta a .txt -> descargar {audio_url_public}")
-            r = requests.get(audio_url_public, timeout=30)
-            r.raise_for_status()
-            texto = r.text
-            print(f"[MAIN] Texto descargado desde .txt, longitud {len(texto)} caracteres.")
-    except Exception as e_txt:
-        print(f"[MAIN][WARN] No se pudo descargar .txt desde la URL: {e_txt}")
+            # heurística: si la URL apunta a un .txt públicamente accesible, lo descargamos y lo usamos
+            try:
+                if isinstance(audio_url_public, str) and audio_url_public.lower().endswith('.txt'):
+                    print(f"[MAIN] audio_url apunta a .txt -> descargar {audio_url_public}")
+                    r = requests.get(audio_url_public, timeout=30)
+                    r.raise_for_status()
+                    texto = r.text
+                    print(f"[MAIN] Texto descargado desde .txt, longitud {len(texto)} caracteres.")
+            except Exception as e_txt:
+                print(f"[MAIN][WARN] No se pudo descargar .txt desde la URL: {e_txt}")
 
-    # Si no obtuvimos texto desde .txt, intentamos AssemblyAI (si está disponible)
-    if not texto:
-        if transcribir_audio:
-            print("[MAIN] Llamando a transcribir_audio (AssemblyAI) para el audio URL...")
-            texto = transcribir_audio(audio_url_public)
-            print(f"[MAIN] Transcripción recibida desde AssemblyAI, longitud {len(texto)} chars.")
-        else:
-            print("[MAIN][STUB] transcribir_audio helper no disponible. Usando texto stub temporal.")
-            texto = "Transcripción de prueba. " * 1000
+            # Si no obtuvimos texto desde .txt, intentamos AssemblyAI (si está disponible)
+            if not texto:
+                if transcribir_audio:
+                    print("[MAIN] Llamando a transcribir_audio (AssemblyAI) para el audio URL...")
+                    texto = transcribir_audio(audio_url_public)
+                    print(f"[MAIN] Transcripción recibida desde AssemblyAI, longitud {len(texto)} chars.")
+                else:
+                    print("[MAIN][STUB] transcribir_audio helper no disponible. Usando texto stub temporal.")
+                    texto = "Transcripción de prueba. " * 1000
 
-except Exception as e:
-    print("[MAIN][ERROR] Falló al obtener la transcripción:", e)
-    traceback.print_exc()
-    if actualizar_estado_y_links:
-        actualizar_estado_y_links(order_id, estado=f"Error: transcripcion {e}")
-    return
+        except Exception as e:
+            print("[MAIN][ERROR] Falló al obtener la transcripción:", e)
+            traceback.print_exc()
+            if actualizar_estado_y_links:
+                actualizar_estado_y_links(order_id, estado=f"Error: transcripcion {e}")
+            return
 
         # Crear tmp_dir para archivos temporales
         tmp_dir = tempfile.mkdtemp(prefix=f"redax_{order_id}_")
@@ -580,6 +581,7 @@ except Exception as e:
         except Exception as e:
             print(f"[MAIN][WARN] No se pudo eliminar tmp_dir {tmp_dir}: {e}")
             traceback.print_exc()
+
 
 # Mantener compatibilidad (si el worker importa main.generate_and_deliver)
 if __name__ == "__main__":
