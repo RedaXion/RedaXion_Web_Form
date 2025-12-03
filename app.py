@@ -11,6 +11,32 @@ from helpers.queue import enqueue_generate_and_deliver
 
 app = FastAPI()
 
+# al inicio del archivo donde ya defines `app = FastAPI()`
+from fastapi import Request
+from fastapi.responses import HTMLResponse
+
+@app.get("/", response_class=HTMLResponse)
+async def index():
+    return "<h2>RedaXion — servicio activo</h2>"
+
+# Maneja la redirección que hace Mercado Pago (GET)
+@app.get("/mp-webhook", response_class=HTMLResponse)
+async def mp_webhook_get(request: Request):
+    # muestra algo simple y legible al usuario tras el pago
+    params = request.query_params
+    ext_ref = params.get("external_reference") or params.get("external_reference", "")
+    status = params.get("collection_status") or params.get("status","")
+    html = f"""
+    <html><body>
+      <h2>Gracias — tu pago fue recibido</h2>
+      <p><strong>Orden:</strong> {ext_ref}</p>
+      <p><strong>Estado:</strong> {status}</p>
+      <p>Si necesitas, revisa tu correo para confirmación.</p>
+    </body></html>
+    """
+    return HTMLResponse(html)
+
+
 @app.post("/create-order")
 async def create_order(
     name: str = Form(...),
