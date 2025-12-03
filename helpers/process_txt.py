@@ -2,7 +2,6 @@
 import os
 import time
 import typing
-import openai
 import backoff  # opcional: añade a requirements.txt si no está
 import logging
 
@@ -84,12 +83,23 @@ No utilices #### ni niveles inferiores.
 Si deseas incluir un ejemplo, escribe “Ejemplo:” como parte del cuerpo del párrafo, o destácalo en cursiva si corresponde, pero no lo marques como encabezado.
 """
 
-# Config de OpenAI: usa env var OPENAI_API_KEY y OPENAI_MODEL (por ejemplo "gpt-5" o "gpt-4o-mini").
+# Config de OpenAI (lectura de env)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5")  # ajusta en Railway si quieres otro modelo
+_raw_model = os.getenv("OPENAI_MODEL", "").strip()
+# Validación simple del nombre de modelo para evitar typos; fallback práctico
+if not _raw_model or len(_raw_model) < 3 or "cahgot" in _raw_model.lower():
+    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    logger.warning("OPENAI_MODEL inválido o ausente ('%s'), usando fallback '%s'", _raw_model, OPENAI_MODEL)
+else:
+    OPENAI_MODEL = _raw_model
 
-if OPENAI_API_KEY:
-    openai.api_key = OPENAI_API_KEY
+# Intentamos importar el wrapper centralizado que usa la API v1+ (crea helpers/openai_client.py)
+try:
+    from helpers.openai_client import chat_completion
+except Exception as e:
+    chat_completion = None
+    logger.warning("helpers.openai_client.chat_completion no está disponible: %s", e)
+    # No hacemos raise en import-time para que los imports funcionen en environments de CI; manejamos en tiempo de uso.
 
 def _build_messages_for_block(block_text: str, order_id: typing.Optional[str], block_index: int, total_blocks: typing.Optional[int]=None):
     """
@@ -129,68 +139,23 @@ def _build_messages_for_block(block_text: str, order_id: typing.Optional[str], b
     ]
     return messages
 
-# backoff strategy for transient errors
+# backoff strategy for transient errors (usa si lo necesitas)
 def backoff_handler(details):
-    logger.warning(f"Retrying after error: {details.get('exception')}, attempt {details.get('tries')}")
+    logger.warning(f"[PROCESS_TXT] Retrying after error: {details.get('exception')}, attempt {details.get('tries')}")
 
-# Evitar referenciar openai.error.* en tiempo de import — usar Exception para compatibilidad
-@backoff.on_exception(backoff.expo, (Exception,), max_tries=5, on_backoff=backoff_handler)
-# backoff-compatible wrapper that uses the new OpenAI python client (v1+).
-# If the new client is not available, it raises a clear error explaining the cause.
-@backoff.on_exception(backoff.expo, (Exception,), max_tries=5, on_backoff=backoff_handler)
 def call_openai_chat(messages, model=OPENAI_MODEL, temperature=0.1, max_tokens=16000):
     """
-    Llama a la API de OpenAI usando la interfaz v1+ (OpenAI().chat.completions.create).
-    No intenta llamar a la API legacy (openai.ChatCompletion) porque esa interfaz fue removida.
+    Wrapper local que delega en helpers.openai_client.chat_completion.
+    Si chat_completion no está disponible, levanta un error claro.
     """
-    if not OPENAI_API_KEY:
-        raise RuntimeError("OPENAI_API_KEY no configurada en variables de entorno.")
-
-    logger.info(f"[OPENAI] Llamando modelo={model} con temperature={temperature}")
-
-    # Intentar usar la nueva interfaz (openai>=1.0.0)
-    try:
-        # Import local para evitar fallos en tiempo de import si la versión no lo soporta
-        try:
-            from openai import OpenAI as OpenAIClient
-        except Exception:
-            # En algunas instalaciones la clase está en openai.OpenAI (alias); intentar importar directamente
-            import openai as _openai_mod
-            OpenAIClient = getattr(_openai_mod, "OpenAI", None)
-            if OpenAIClient is None:
-                raise ImportError("El cliente OpenAI (OpenAI) no está disponible en el paquete 'openai' instalado.")
-
-        client = OpenAIClient(api_key=OPENAI_API_KEY)
-        resp = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-
-        # Extraer el contenido de forma robusta
-        try:
-            # Forma objeto: resp.choices[0].message.content
-            return resp.choices[0].message.content
-        except Exception:
-            pass
-        try:
-            # Forma dict-like: resp["choices"][0]["message"]["content"]
-            return resp["choices"][0]["message"]["content"]
-        except Exception:
-            pass
-        # Si no pudimos extraer, devolver string del objeto
-        return str(resp)
-
-    except Exception as exc_new:
-        # Mensaje claro para el usuario/CI
-        logger.exception("Llamada a OpenAI (v1+) falló: %s", exc_new)
+    if chat_completion is None:
         raise RuntimeError(
-            "Fallo al usar la nueva API de OpenAI (openai>=1.0). "
-            "Asegúrate de que la librería 'openai' instalada en el entorno soporte la interfaz v1 (OpenAI().chat.completions.create). "
-            "Si no deseas migrar ahora, como alternativa podrías pinnear la versión antigua añadiendo `pip install openai==0.28` en tu CI/workflow."
-        ) from exc_new
-
+            "helpers.openai_client.chat_completion no disponible. "
+            "Crea el archivo helpers/openai_client.py con el wrapper para OpenAI v1+ "
+            "o instala/activa la versión adecuada del paquete 'openai'."
+        )
+    # delegar y devolver
+    return chat_completion(messages, model=model, temperature=temperature, max_tokens=max_tokens)
 
 def procesar_txt_con_chatgpt_block(block_text: str, order_id: typing.Optional[str]=None, block_index: int=1, total_blocks: typing.Optional[int]=None, model: typing.Optional[str]=None):
     """
@@ -201,7 +166,7 @@ def procesar_txt_con_chatgpt_block(block_text: str, order_id: typing.Optional[st
     - total_blocks: opcional: número total de bloques.
     - model: opcional: nombre del modelo; si no se pasa, usa OPENAI_MODEL env var.
     """
-    model_to_use = model or OPENAI_MODEL or "gpt-5"
+    model_to_use = model or OPENAI_MODEL or "gpt-4o-mini"
 
     logger.info(f"[PROCESS_TXT] Procesando bloque {block_index} order_id={order_id} (modelo={model_to_use})")
     try:
