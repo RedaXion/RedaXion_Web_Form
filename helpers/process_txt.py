@@ -143,10 +143,12 @@ def _build_messages_for_block(block_text: str, order_id: typing.Optional[str], b
 def backoff_handler(details):
     logger.warning(f"[PROCESS_TXT] Retrying after error: {details.get('exception')}, attempt {details.get('tries')}")
 
-def call_openai_chat(messages, model=OPENAI_MODEL, temperature=0.1, max_tokens=16000):
+def call_openai_chat(messages, model=OPENAI_MODEL, temperature=None, max_tokens=4000):
     """
     Wrapper local que delega en helpers.openai_client.chat_completion.
     Si chat_completion no está disponible, levanta un error claro.
+    temperature: si None -> dejamos que el wrapper decida (y retire si el modelo no lo soporta)
+    max_tokens: valor prudente por defecto (4000)
     """
     if chat_completion is None:
         raise RuntimeError(
@@ -156,6 +158,10 @@ def call_openai_chat(messages, model=OPENAI_MODEL, temperature=0.1, max_tokens=1
         )
     # delegar y devolver
     return chat_completion(messages, model=model, temperature=temperature, max_tokens=max_tokens)
+
+def _safe_filename(order_id: typing.Optional[str], block_index: int, suffix: str):
+    safe_order = order_id if order_id else "noorder"
+    return f"/tmp/{safe_order}_block_{block_index}_{suffix}"
 
 def procesar_txt_con_chatgpt_block(block_text: str, order_id: typing.Optional[str]=None, block_index: int=1, total_blocks: typing.Optional[int]=None, model: typing.Optional[str]=None):
     """
@@ -169,15 +175,36 @@ def procesar_txt_con_chatgpt_block(block_text: str, order_id: typing.Optional[st
     model_to_use = model or OPENAI_MODEL or "gpt-4o-mini"
 
     logger.info(f"[PROCESS_TXT] Procesando bloque {block_index} order_id={order_id} (modelo={model_to_use})")
+
+    # Guardar el bloque entrante para debugging
+    try:
+        in_path = _safe_filename(order_id, block_index, "in.txt")
+        with open(in_path, "w", encoding="utf-8") as fh:
+            fh.write(block_text)
+        logger.debug("Saved block input to %s", in_path)
+    except Exception:
+        logger.exception("No se pudo guardar el bloque de entrada en /tmp (no crítico)")
+
     try:
         messages = _build_messages_for_block(block_text, order_id, block_index, total_blocks)
-        # elegir max_tokens prudente; si el bloque es grande la respuesta puede ser grande también.
-        # Ajusta este valor según el modelo y límites:
-        max_tokens = 16000  # ajustar según modelo / limits
-        result = call_openai_chat(messages, model=model_to_use, temperature=0.12, max_tokens=max_tokens)
+
+        # Valores seguros por defecto (evitan errores con modelos que no soportan temperature o tokens altos)
+        safe_max_tokens = 4000  # cambiable si tu modelo soporta más
+        # Pasar temperature=None permite que openai_client retire el parámetro si el modelo no lo soporta
+        result = call_openai_chat(messages, model=model_to_use, temperature=None, max_tokens=safe_max_tokens)
 
         # limpiar/normalizar resultado (por ejemplo, eliminar espacios al inicio)
         processed = result.strip() if isinstance(result, str) else str(result)
+
+        # Guardar salida procesada para debugging
+        try:
+            out_path = _safe_filename(order_id, block_index, "out.md")
+            with open(out_path, "w", encoding="utf-8") as fh:
+                fh.write(processed)
+            logger.debug("Saved processed output to %s", out_path)
+        except Exception:
+            logger.exception("No se pudo guardar el output procesado en /tmp (no crítico)")
+
         logger.info(f"[PROCESS_TXT] Bloque {block_index} procesado, longitud {len(processed)} chars")
         return processed
 
@@ -190,4 +217,12 @@ def procesar_txt_con_chatgpt_block(block_text: str, order_id: typing.Optional[st
             "El contenido original se incluye a continuación sin cambios.\n\n"
             f"{block_text[:10000]}\n\n"  # limitar tamaño
         )
+        # intentar guardar fallback
+        try:
+            fb_path = _safe_filename(order_id, block_index, "fallback.md")
+            with open(fb_path, "w", encoding="utf-8") as fh:
+                fh.write(fallback)
+            logger.debug("Saved fallback to %s", fb_path)
+        except Exception:
+            logger.exception("No se pudo guardar el fallback en /tmp (no crítico)")
         return fallback
