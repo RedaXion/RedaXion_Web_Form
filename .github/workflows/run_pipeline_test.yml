@@ -1,0 +1,55 @@
+name: Run RedaXion pipeline test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-pipeline-test:
+    runs-on: ubuntu-latest
+    env:
+      # Si tus secrets usan nombres distintos, cámbialos en GitHub repo Settings -> Secrets
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+      REDIS_URL: ${{ secrets.REDIS_URL }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install requirements
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install backoff
+
+      - name: Run process_txt test
+        run: |
+          echo "=== RUNNING process_txt test ==="
+          python -c "from helpers.process_txt import procesar_txt_con_chatgpt_block; print('START'); out = procesar_txt_con_chatgpt_block('Texto de prueba: fisiopatologia', order_id='gha_test', block_index=1) ; print('LEN', len(out)); open('gha_process_out.md','w',encoding='utf-8').write(out); print('SAVED gha_process_out.md')"
+
+      - name: Run generar_quiz test
+        run: |
+          echo "=== RUNNING generar_quiz test ==="
+          python -c "from helpers.generar_quiz import generar_quiz_from_text; print('START'); q = generar_quiz_from_text('Texto de prueba: fisiopatologia', order_id='gha_test', block_index=1); open('gha_quiz_out.txt','w',encoding='utf-8').write(q); print('SAVED gha_quiz_out.txt')"
+
+      - name: List /workspace files
+        run: ls -lah
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: reda_outputs
+          path: |
+            gha_process_out.md
+            gha_quiz_out.txt
+
+      - name: Print small previews
+        run: |
+          echo "---- PROCESS PREVIEW ----"
+          head -n 40 gha_process_out.md || true
+          echo "---- QUIZ PREVIEW ----"
+          head -n 60 gha_quiz_out.txt || true
