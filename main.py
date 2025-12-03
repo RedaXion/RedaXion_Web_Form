@@ -17,6 +17,7 @@ import os
 import tempfile
 import traceback
 import shutil
+import json
 from datetime import datetime, timedelta
 
 # Intentar importar tus helpers (estructura original). Si están en 'helpers.*' ajustamos.
@@ -58,8 +59,84 @@ except Exception:
         enviar_correo_con_adjuntos = None
         convertir_a_pdf = None
 
-import math
-import json
+# -----------------------
+# Fallback directo a Google Sheets (si los helpers no funcionan)
+# -----------------------
+def get_details_from_sheet_direct(order_id: str):
+    """
+    Fallback: leer hoja directamente con gspread usando GOOGLE_SHEETS_CREDENTIALS_JSON y SHEET_ID.
+    Devuelve dict con claves similares a las que espera el flujo: orden, color, columnas, email, audio_url, fila.
+    """
+    try:
+        import gspread
+    except Exception as e:
+        print("[SHEETS FALLBACK] gspread no disponible:", e)
+        return None
+
+    creds_json = os.getenv("GOOGLE_SHEETS_CREDENTIALS_JSON") or os.getenv("GCS_CREDENTIALS_JSON")
+    sheet_id = os.getenv("SHEET_ID") or os.getenv("GOOGLE_SHEET_ID") or os.getenv("SHEET_KEY")
+    if not creds_json:
+        print("[SHEETS FALLBACK] No encontré GOOGLE_SHEETS_CREDENTIALS_JSON en env.")
+        return None
+    if not sheet_id:
+        print("[SHEETS FALLBACK] No encontré SHEET_ID en env.")
+        return None
+
+    try:
+        info = json.loads(creds_json)
+    except Exception as e:
+        print("[SHEETS FALLBACK] GOOGLE_SHEETS_CREDENTIALS_JSON no es JSON válido:", e)
+        return None
+
+    try:
+        gc = gspread.service_account_from_dict(info)
+    except Exception as e:
+        print("[SHEETS FALLBACK] Error creando service_account_from_dict:", e)
+        return None
+
+    # Abrir spreadsheet: intenta por key o por url
+    sh = None
+    try:
+        sh = gc.open_by_key(sheet_id)
+    except Exception:
+        try:
+            sh = gc.open_by_url(sheet_id)
+        except Exception as e:
+            print("[SHEETS FALLBACK] No pude abrir la hoja con SHEET_ID/url:", e)
+            return None
+
+    try:
+        ws = sh.sheet1  # si usas otra hoja, cambia aquí
+        records = ws.get_all_records()  # lista de dicts usando header como key
+    except Exception as e:
+        print("[SHEETS FALLBACK] Error leyendo worksheet:", e)
+        return None
+
+    for idx, row in enumerate(records, start=2):  # start=2 -> fila real en sheet (1 = header)
+        # normaliza la clave 'orden' (puede venir con mayúsculas)
+        key_candidates = [k for k in row.keys() if k.lower().strip() == "orden"]
+        if key_candidates:
+            key = key_candidates[0]
+            if str(row.get(key)).strip() == str(order_id).strip():
+                # construir dict con claves esperadas
+                detalle = {
+                    "orden": row.get(key),
+                    "fila": idx,
+                    "fecha": row.get("fecha") or row.get("Fecha"),
+                    "nombre": row.get("nombre") or row.get("Nombre"),
+                    "email": row.get("email") or row.get("Email"),
+                    "audio_url": row.get("audio_url") or row.get("Audio_URL") or row.get("audio") or row.get("Audio"),
+                    "columnas": row.get("columnas") or row.get("Columnas"),
+                    "color": row.get("color") or row.get("Color"),
+                    "estado": row.get("estado") or row.get("Estado"),
+                    "payment_id": row.get("payment_id") or row.get("payment id") or row.get("payment"),
+                    "comentarios": row.get("comentarios") or row.get("Comentarios") or "",
+                }
+                print(f"[SHEETS FALLBACK] Orden encontrada en fila {idx}: {detalle}")
+                return detalle
+
+    print("[SHEETS FALLBACK] No encontré la orden en la hoja (fallback).")
+    return None
 
 # -----------------------
 # Utilidades internas
@@ -218,19 +295,39 @@ def generate_and_deliver(order_id, *args, **kwargs):
     tmp_dir = None
     try:
         print(f"\n🚀 [MAIN] generate_and_deliver -> order_id={order_id} - inicio {datetime.utcnow().isoformat()}")
+        if kwargs:
+            print(f"[MAIN] kwargs recibidos: {kwargs}")
 
         # 1) Obtener datos de la orden desde sheets (fila / detalles)
         detalles = None
+
+        # 1.a Intentar helper directo por orden
         if get_pedido_por_fila:
             try:
                 detalles = get_pedido_por_fila(order_id)
-            except Exception:
+                print(f"[MAIN] get_pedido_por_fila devolvió: {bool(detalles)}")
+            except Exception as e:
+                print("[MAIN] get_pedido_por_fila lanzó excepción:", e)
                 detalles = None
 
+        # 1.b Intentar lista de pendientes
         if not detalles and get_todos_los_pendientes:
-            print("[MAIN] Detalles no recuperados por order_id, buscando en pendientes...")
-            pendientes = get_todos_los_pendientes()
-            detalles = next((p for p in pendientes if p.get("orden") == order_id), None)
+            try:
+                pendientes = get_todos_los_pendientes()
+                print(f"[MAIN] get_todos_los_pendientes devolvió {len(pendientes)} items (si es lista).")
+                detalles = next((p for p in pendientes if str(p.get("orden")).strip() == str(order_id).strip()), None)
+            except Exception as e:
+                print("[MAIN] get_todos_los_pendientes excepción:", e)
+                detalles = None
+
+        # 1.c Fallback directo a Google Sheets (gspread)
+        if not detalles:
+            print("[MAIN] Intentando fallback directo a Google Sheets...")
+            try:
+                detalles = get_details_from_sheet_direct(order_id)
+            except Exception as e:
+                print("[MAIN] get_details_from_sheet_direct excepción:", e)
+                detalles = None
 
         if not detalles:
             print(f"[MAIN][WARN] No se encontró metadata de la orden {order_id} en Sheets. Abortando.")
@@ -239,10 +336,10 @@ def generate_and_deliver(order_id, *args, **kwargs):
         # Validación básica
         color = detalles.get("color", "azul")
         columnas = detalles.get("columnas", "simple")
-        correo_cliente = detalles.get("email", "")
+        correo_cliente = detalles.get("email", "") or detalles.get("correo") or ""
         fila = detalles.get("fila") or detalles.get("row") or None
 
-        estado_actual = detalles.get("estado", "").strip().lower()
+        estado_actual = (detalles.get("estado") or "").strip().lower()
         if "entregado" in estado_actual or "procesado" in estado_actual:
             print(f"[MAIN] Orden {order_id} ya tiene estado '{estado_actual}'. Saltando procesamiento.")
             return
@@ -252,7 +349,7 @@ def generate_and_deliver(order_id, *args, **kwargs):
         if not audio_url_public:
             print("[MAIN] No se encontró audio_url en metadata: intentando reprocesar con gcs.procesar_audio (si se tiene path)")
             try:
-                source_path = detalles.get("audio_path") or detalles.get("gdrive_path")
+                source_path = detalles.get("audio_path") or detalles.get("gdrive_path") or detalles.get("path")
                 if procesar_audio and source_path:
                     audio_url_public = procesar_audio(source_path, f"{order_id}.mp3")
             except Exception:
