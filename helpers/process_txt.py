@@ -131,9 +131,10 @@ def _build_messages_for_block(block_text: str, order_id: typing.Optional[str], b
 
 # backoff strategy for transient errors
 def backoff_handler(details):
-    logger.warning(f"Retrying after error: {details['exception']}, attempt {details['tries']}")
+    logger.warning(f"Retrying after error: {details.get('exception')}, attempt {details.get('tries')}")
 
-@backoff.on_exception(backoff.expo, (openai.error.RateLimitError, openai.error.APIError, openai.error.Timeout), max_tries=5, on_backoff=backoff_handler)
+# Evitar referenciar openai.error.* en tiempo de import — usar Exception para compatibilidad
+@backoff.on_exception(backoff.expo, (Exception,), max_tries=5, on_backoff=backoff_handler)
 def call_openai_chat(messages, model=OPENAI_MODEL, temperature=0.1, max_tokens=16000):
     """
     Llama a la API de OpenAI (ChatCompletion). Usa reintentos para RateLimit y transient errors.
@@ -151,7 +152,15 @@ def call_openai_chat(messages, model=OPENAI_MODEL, temperature=0.1, max_tokens=1
         max_tokens=max_tokens,
     )
     # tomar el primer choice
-    text = response.choices[0].message["content"]
+    # manejar compatibilidad con diferentes versiones del SDK
+    try:
+        text = response.choices[0].message["content"]
+    except Exception:
+        # fallback: intentar otra estructura posible
+        try:
+            text = response["choices"][0]["message"]["content"]
+        except Exception:
+            text = str(response)
     return text
 
 def procesar_txt_con_chatgpt_block(block_text: str, order_id: typing.Optional[str]=None, block_index: int=1, total_blocks: typing.Optional[int]=None, model: typing.Optional[str]=None):
@@ -174,7 +183,7 @@ def procesar_txt_con_chatgpt_block(block_text: str, order_id: typing.Optional[st
         result = call_openai_chat(messages, model=model_to_use, temperature=0.12, max_tokens=max_tokens)
 
         # limpiar/normalizar resultado (por ejemplo, eliminar espacios al inicio)
-        processed = result.strip()
+        processed = result.strip() if isinstance(result, str) else str(result)
         logger.info(f"[PROCESS_TXT] Bloque {block_index} procesado, longitud {len(processed)} chars")
         return processed
 
