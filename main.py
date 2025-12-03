@@ -1,4 +1,4 @@
-# main.py - flujo completo RedaXion (actualizado)
+# main.py - flujo completo RedaXion (actualizado) - versión integrada con process_txt
 """
 generate_and_deliver(order_id, *args, **kwargs)
 
@@ -16,6 +16,7 @@ Orquesta el flujo completo para una orden:
 import os
 import tempfile
 import traceback
+import shutil
 from datetime import datetime, timedelta
 
 # Intentar importar tus helpers (estructura original). Si están en 'helpers.*' ajustamos.
@@ -23,7 +24,7 @@ try:
     from sheets import get_todos_los_pendientes, marcar_como_procesado, get_pedido_por_fila, actualizar_estado_y_links
     from gcs import procesar_audio
     from assemblyai import transcribir_audio
-    from process_txt import procesar_txt_con_chatgpt_block  # si existe
+    from process_txt import procesar_txt_con_chatgpt_block  # tu helper nuevo (si está en raíz)
     from formatter_docx import guardar_como_docx, guardar_quiz_como_docx
     from subir_archivo import subir_archivo_a_drive
     from generar_quiz import generar_quiz_desde_docx
@@ -57,7 +58,6 @@ except Exception:
         enviar_correo_con_adjuntos = None
         convertir_a_pdf = None
 
-import importlib
 import math
 import json
 
@@ -72,24 +72,34 @@ def split_text_into_blocks(text: str, words_per_block: int = 3000):
         blocks.append(block)
     return blocks
 
-def call_chatgpt_for_block(block_text: str, block_index: int, order_id: str):
+def call_chatgpt_for_block(block_text: str, block_index: int, order_id: str, total_blocks: int):
     """
     Llama a la función que transforma un bloque en estilo 'TCP' y devuelve texto formateado.
-    Intenta usar el helper 'procesar_txt_con_chatgpt_block' si existe, si no, usa un stub
-    (reemplazar con llamadas a tu wrapper de ChatGPT-5).
+    Usa el helper procesar_txt_con_chatgpt_block si existe.
+    Guarda resultado parcial en /tmp para debugging.
     """
     try:
+        print(f"[CHATGPT] Iniciando bloque {block_index}/{total_blocks} (order {order_id})")
         if procesar_txt_con_chatgpt_block:
-            print(f"[CHATGPT] usando helper procesar_txt_con_chatgpt_block para bloque {block_index}")
-            return procesar_txt_con_chatgpt_block(block_text, order_id=order_id, block_index=block_index)
+            result = procesar_txt_con_chatgpt_block(block_text, order_id=order_id, block_index=block_index, total_blocks=total_blocks)
         else:
-            # STUB: agregar encabezado por bloque. Reemplazar por llamada a ChatGPT-5 API.
-            print(f"[CHATGPT][STUB] procesando bloque {block_index} (stub)")
-            return f"## Bloque {block_index}\n\n" + block_text[:2000] + "\n\n"
+            print("[CHATGPT][STUB] helper procesar_txt_con_chatgpt_block no disponible. Usando stub.")
+            result = f"## Bloque {block_index}\n\n" + block_text[:2000] + "\n\n"
+
+        # Guardar salida parcial en archivo (útil para revisar si algo falla)
+        try:
+            tmp_file = f"/tmp/{order_id}_block_{block_index}.md"
+            with open(tmp_file, "w", encoding="utf-8") as fh:
+                fh.write(result)
+            print(f"[CHATGPT] Resultado bloque {block_index} guardado en {tmp_file}")
+        except Exception as e:
+            print(f"[CHATGPT][WARN] No se pudo guardar block_{block_index}.md: {e}")
+
+        return result
     except Exception as e:
         print(f"[CHATGPT][ERROR] al procesar bloque {block_index}: {e}")
         traceback.print_exc()
-        return ""
+        return f"## ERROR BLOQUE {block_index}\n\n{block_text[:8000]}\n\n"
 
 def merge_processed_blocks(blocks_processed):
     return "\n\n".join(blocks_processed)
@@ -97,24 +107,19 @@ def merge_processed_blocks(blocks_processed):
 def extract_titles_subtitles(tcp_text: str):
     """
     Heurística simple para extraer títulos/subtítulos desde el texto TCP.
-    Ideal: reemplazar por un extractor robusto o por otro call a la API.
     Devuelve lista de tuples (title, subtitle, approx_page).
     """
     lines = [l.strip() for l in tcp_text.splitlines() if l.strip()]
     titles = []
-    # heurística: líneas que parecen headings (p.ej. tienen menos de 100 chars y empiezan con mayúscula)
     for i, line in enumerate(lines):
         if len(line) < 120 and line[0].isupper() and len(line.split()) < 8:
-            # tomar la siguiente línea corta como subtítulo si aplica
             subtitle = ""
             if i + 1 < len(lines) and len(lines[i+1].split()) < 12:
                 subtitle = lines[i+1]
             titles.append((line, subtitle))
-    # agregar approx page index (distribuir uniformemente)
     result = []
     if not titles:
         return []
-    total = max(1, len(titles))
     for idx, t in enumerate(titles):
         approx_page = idx + 1
         result.append((t[0], t[1], approx_page))
@@ -124,20 +129,14 @@ def search_image_for_topic(title: str, subtitle: str = ""):
     """
     Placeholder: Buscar la mejor imagen para un tema.
     Reemplaza esto con integración real (Unsplash, Bing Image Search, Google Custom Search, etc.).
-    Debe devolver URL pública de la imagen o path local subido a Drive/GCS.
     """
-    # STUB: devuelve placeholder o marca para reemplazar
     query = f"{title} {subtitle}".strip()
     print(f"[IMG_SEARCH][STUB] buscar imagen para: {query}")
-    # Ejemplo de placeholder (puedes cambiar por la llamada real)
     return f"https://via.placeholder.com/1200x800.png?text={query.replace(' ', '+')}"
-
 
 def generate_questions_for_titles(titles_list, per_title=7):
     """
-    Genera preguntas por cada título/subtítulo.
-    Ideal: conectar con tu módulo generador (o invocar ChatGPT con prompt EUNACOM-style).
-    Devuelve dict: {page_num: [ {q:..., options:[...], answer:..., justification:...}, ... ] }
+    Genera preguntas por cada título/subtítulo (STUB).
     """
     questions_by_page = {}
     for title, subtitle, page in titles_list:
@@ -151,7 +150,6 @@ def generate_questions_for_titles(titles_list, per_title=7):
                 "D) Opción 4",
                 "E) Opción 5",
             ]
-            # STUB: respuesta siempre 'A' (reemplazar con IA)
             questions.append({
                 "question": q_text,
                 "options": options,
@@ -163,23 +161,17 @@ def generate_questions_for_titles(titles_list, per_title=7):
 
 def apply_docx_template_and_insert_images(tcp_text, images_map, out_path, color="azul", columnas="simple"):
     """
-    Usa tu helper `guardar_como_docx`. Si tu helper acepta 'images' pasa el map,
-    sino implementa aquí un pequeño generador con python-docx (omitted).
-    images_map: {page_number: image_url}
+    Usa tu helper `guardar_como_docx` si existe; sino genera DOCX simple.
     """
     try:
         if guardar_como_docx:
-            print("[DOCX] usando helper guardar_como_docx (con imágenes si el helper lo soporta).")
-            # Se asume que guardar_como_docx acepta param images_map (si no, extiende el helper).
             try:
                 return guardar_como_docx(tcp_text, out_path, color=color, columnas=columnas, images_map=images_map)
             except TypeError:
-                # helper no acepta images_map -> llamar sin él (dejar TODO para integrar)
-                print("[DOCX] guardar_como_docx no acepta images_map: llamando sin imágenes (extender helper).")
+                print("[DOCX] guardar_como_docx no acepta images_map: llamando sin images_map.")
                 return guardar_como_docx(tcp_text, out_path, color=color, columnas=columnas)
         else:
-            # STUB: crear archivo .docx simple con el texto (placeholder)
-            print("[DOCX][STUB] crear DOCX simple (no plantilla).")
+            print("[DOCX][STUB] creando DOCX simple")
             from docx import Document
             doc = Document()
             for para in tcp_text.split("\n\n"):
@@ -194,14 +186,11 @@ def apply_docx_template_and_insert_images(tcp_text, images_map, out_path, color=
 def apply_quiz_template_and_save(questions_by_page, out_quiz_path, color="azul", columnas="simple"):
     """
     Convierte questions_by_page a un docx con formato.
-    Usamos guardar_quiz_como_docx si existe.
     """
     try:
         if guardar_quiz_como_docx:
-            print("[QUIZ] usando helper guardar_quiz_como_docx")
             return guardar_quiz_como_docx(questions_by_page, out_quiz_path, color=color, columnas=columnas)
         else:
-            # STUB: construir docx con preguntas básicas
             print("[QUIZ][STUB] guardando quiz básico en docx")
             from docx import Document
             doc = Document()
@@ -226,21 +215,18 @@ def generate_and_deliver(order_id, *args, **kwargs):
     """
     Orquesta todo el pipeline para una orden específica.
     """
+    tmp_dir = None
     try:
         print(f"\n🚀 [MAIN] generate_and_deliver -> order_id={order_id} - inicio {datetime.utcnow().isoformat()}")
 
         # 1) Obtener datos de la orden desde sheets (fila / detalles)
+        detalles = None
         if get_pedido_por_fila:
             try:
-                # Si tu sheets helper devuelve por orden_id, ajusta este llamado.
                 detalles = get_pedido_por_fila(order_id)
             except Exception:
-                # algunos flows usan get_todos_los_pendientes -> buscar manualmente
                 detalles = None
-        else:
-            detalles = None
 
-        # Si no encontramos detalles, intentar buscar en pendientes
         if not detalles and get_todos_los_pendientes:
             print("[MAIN] Detalles no recuperados por order_id, buscando en pendientes...")
             pendientes = get_todos_los_pendientes()
@@ -256,18 +242,16 @@ def generate_and_deliver(order_id, *args, **kwargs):
         correo_cliente = detalles.get("email", "")
         fila = detalles.get("fila") or detalles.get("row") or None
 
-        # Idempotencia: si ya está marcado procesado -> saltar
         estado_actual = detalles.get("estado", "").strip().lower()
         if "entregado" in estado_actual or "procesado" in estado_actual:
             print(f"[MAIN] Orden {order_id} ya tiene estado '{estado_actual}'. Saltando procesamiento.")
             return
 
-        # 2) Obtener URL pública del audio (helper gcs/procesar_audio)
+        # 2) Obtener URL pública del audio
         audio_url_public = detalles.get("audio_url") or detalles.get("url") or None
         if not audio_url_public:
             print("[MAIN] No se encontró audio_url en metadata: intentando reprocesar con gcs.procesar_audio (si se tiene path)")
             try:
-                # si detalles tiene 'gcs_path' o 'audio_path' se puede usar procesar_audio
                 source_path = detalles.get("audio_path") or detalles.get("gdrive_path")
                 if procesar_audio and source_path:
                     audio_url_public = procesar_audio(source_path, f"{order_id}.mp3")
@@ -279,8 +263,6 @@ def generate_and_deliver(order_id, *args, **kwargs):
             try:
                 if actualizar_estado_y_links:
                     actualizar_estado_y_links(order_id, estado="Error: no audio_url")
-                else:
-                    print("[MAIN] actualizar_estado_y_links no disponible (helper).")
             except Exception:
                 pass
             return
@@ -302,47 +284,51 @@ def generate_and_deliver(order_id, *args, **kwargs):
                 actualizar_estado_y_links(order_id, estado=f"Error: transcripcion {e}")
             return
 
-        # Guardar .txt local y subir a Drive
-        tmp_dir = tempfile.mkdtemp()
+        # Crear tmp_dir para archivos temporales
+        tmp_dir = tempfile.mkdtemp(prefix=f"redax_{order_id}_")
         path_txt = os.path.join(tmp_dir, f"{order_id}.txt")
         try:
             with open(path_txt, "w", encoding="utf-8") as f:
                 f.write(texto)
             print(f"[MAIN] Guardado .txt temporal en {path_txt}")
             if subir_archivo_a_drive:
-                subir_archivo_a_drive(path_txt, f"{order_id}.txt", order_id)
-                print("[MAIN] .txt subido a Drive.")
+                try:
+                    subir_archivo_a_drive(path_txt, f"{order_id}.txt", order_id)
+                    print("[MAIN] .txt subido a Drive.")
+                except Exception as e:
+                    print(f"[MAIN][WARN] No se pudo subir .txt a Drive: {e}")
         except Exception as e:
             print("[MAIN][ERROR] No se pudo guardar/subir .txt:", e)
             traceback.print_exc()
 
-        # 4) Dividir en bloques de 3000 palabras y procesar cada bloque con ChatGPT-5
+        # 4) Dividir en bloques y procesar cada bloque
         blocks = split_text_into_blocks(texto, words_per_block=3000)
-        print(f"[MAIN] Texto dividido en {len(blocks)} bloques de ~3000 palabras.")
+        total_blocks = len(blocks)
+        print(f"[MAIN] Texto dividido en {total_blocks} bloques de ~3000 palabras.")
 
         processed_blocks = []
         for i, blk in enumerate(blocks, start=1):
-            pb = call_chatgpt_for_block(blk, i, order_id)
+            pb = call_chatgpt_for_block(blk, i, order_id, total_blocks)
             processed_blocks.append(pb)
 
         tcp_text = merge_processed_blocks(processed_blocks)
         print(f"[MAIN] TCP (texto procesado) ensamblado, tamaño {len(tcp_text)} caracteres.")
 
-        # 5) Extraer títulos/subtítulos y estimar páginas (heurística)
+        # 5) Extraer títulos/subtítulos
         titles = extract_titles_subtitles(tcp_text)
         print(f"[MAIN] Extraídos {len(titles)} títulos/subtítulos heurísticos.")
 
-        # 6) Para cada título / página -> buscar imagen relevante (STUB)
-        images_map = {}  # page_num -> image_url
+        # 6) Buscar imágenes (STUB)
+        images_map = {}
         for title, subtitle, page in titles:
             img_url = search_image_for_topic(title, subtitle)
             images_map[page] = img_url
-
         print(f"[MAIN] Imágenes buscadas para {len(images_map)} páginas (map listo).")
 
         # 7) Generar preguntas por título/página (7 por página)
         questions_by_page = generate_questions_for_titles(titles, per_title=7)
-        print(f"[MAIN] Generadas preguntas: {sum(len(v) for v in questions_by_page.values())} ítems.")
+        total_questions = sum(len(v) for v in questions_by_page.values())
+        print(f"[MAIN] Generadas preguntas: {total_questions} ítems.")
 
         # 8) Guardar TCP en DOCX usando plantilla y aplicar imágenes por página
         nombre_tcp = f"RedaXion - Nº{order_id}.docx"
@@ -351,8 +337,11 @@ def generate_and_deliver(order_id, *args, **kwargs):
         if docx_path_result:
             print(f"[MAIN] DOCX TCP generado en {docx_path_result}")
             if subir_archivo_a_drive:
-                subir_archivo_a_drive(docx_path_result, nombre_tcp, order_id)
-                print("[MAIN] DOCX TCP subido a Drive.")
+                try:
+                    subir_archivo_a_drive(docx_path_result, nombre_tcp, order_id)
+                    print("[MAIN] DOCX TCP subido a Drive.")
+                except Exception as e:
+                    print(f"[MAIN][WARN] No se pudo subir DOCX a Drive: {e}")
         else:
             print("[MAIN][ERROR] No se pudo generar DOCX TCP.")
 
@@ -363,8 +352,11 @@ def generate_and_deliver(order_id, *args, **kwargs):
                 pdf_tcp = convertir_a_pdf(docx_path_result)
                 if pdf_tcp:
                     nombre_tcp_pdf = nombre_tcp.replace(".docx", ".pdf")
-                    subir_archivo_a_drive(pdf_tcp, nombre_tcp_pdf, order_id)
-                    print(f"[MAIN] PDF TCP generado y subido: {nombre_tcp_pdf}")
+                    try:
+                        subir_archivo_a_drive(pdf_tcp, nombre_tcp_pdf, order_id)
+                        print(f"[MAIN] PDF TCP generado y subido: {nombre_tcp_pdf}")
+                    except Exception as e:
+                        print(f"[MAIN][WARN] No se pudo subir PDF TCP a Drive: {e}")
         except Exception as e:
             print("[MAIN][ERROR] convertir_a_pdf fallo:", e)
             traceback.print_exc()
@@ -376,19 +368,26 @@ def generate_and_deliver(order_id, *args, **kwargs):
         if quiz_docx:
             print(f"[MAIN] Quiz DOCX generado en {quiz_docx}")
             if subir_archivo_a_drive:
-                subir_archivo_a_drive(quiz_docx, nombre_quiz, order_id)
-                print("[MAIN] Quiz DOCX subido a Drive.")
+                try:
+                    subir_archivo_a_drive(quiz_docx, nombre_quiz, order_id)
+                    print("[MAIN] Quiz DOCX subido a Drive.")
+                except Exception as e:
+                    print(f"[MAIN][WARN] No se pudo subir Quiz DOCX a Drive: {e}")
         else:
             print("[MAIN][WARN] No se produjo Quiz DOCX.")
 
         # 11) Convertir QUIZ a PDF
+        pdf_quiz = None
         try:
             if convertir_a_pdf and quiz_docx:
                 pdf_quiz = convertir_a_pdf(quiz_docx)
                 if pdf_quiz:
                     nombre_quiz_pdf = nombre_quiz.replace(".docx", ".pdf")
-                    subir_archivo_a_drive(pdf_quiz, nombre_quiz_pdf, order_id)
-                    print(f"[MAIN] PDF Quiz generado y subido: {nombre_quiz_pdf}")
+                    try:
+                        subir_archivo_a_drive(pdf_quiz, nombre_quiz_pdf, order_id)
+                        print(f"[MAIN] PDF Quiz generado y subido: {nombre_quiz_pdf}")
+                    except Exception as e:
+                        print(f"[MAIN][WARN] No se pudo subir PDF Quiz a Drive: {e}")
         except Exception as e:
             print("[MAIN][ERROR] convertir_a_pdf (quiz) fallo:", e)
             traceback.print_exc()
@@ -396,18 +395,16 @@ def generate_and_deliver(order_id, *args, **kwargs):
         # 12) Actualizar Sheets: marcar como entregado y publicar links (si tienes helper)
         try:
             if actualizar_estado_y_links:
-                # Debe aceptar order_id, estado, links dict {tcp: url, pdf: url, quiz: url}
                 links = {
                     "txt": f"{order_id}.txt",
                     "docx_tcp": nombre_tcp,
                     "pdf_tcp": nombre_tcp.replace(".docx", ".pdf") if pdf_tcp else None,
                     "docx_quiz": nombre_quiz,
-                    "pdf_quiz": nombre_quiz.replace(".docx", ".pdf") if 'pdf_quiz' in locals() and pdf_quiz else None,
+                    "pdf_quiz": nombre_quiz.replace(".docx", ".pdf") if pdf_quiz else None,
                 }
                 actualizar_estado_y_links(order_id, estado="Entregado", links=links)
                 print("[MAIN] Sheets actualizado con estado Entregado y links.")
             else:
-                print("[MAIN] actualizar_estado_y_links helper no disponible; intentar marcar_como_procesado si existe.")
                 if marcar_como_procesado and fila:
                     marcar_como_procesado(fila)
                     print("[MAIN] marcar_como_procesado ejecutado.")
@@ -420,11 +417,11 @@ def generate_and_deliver(order_id, *args, **kwargs):
             archivos_adjuntos = []
             if docx_path_result:
                 archivos_adjuntos.append(docx_path_result)
-            if 'pdf_tcp' in locals() and pdf_tcp:
+            if pdf_tcp:
                 archivos_adjuntos.append(pdf_tcp)
             if quiz_docx:
                 archivos_adjuntos.append(quiz_docx)
-            if 'pdf_quiz' in locals() and pdf_quiz:
+            if pdf_quiz:
                 archivos_adjuntos.append(pdf_quiz)
 
             if enviar_correo_con_adjuntos and correo_cliente:
@@ -434,8 +431,11 @@ def generate_and_deliver(order_id, *args, **kwargs):
                     "Gracias por usar RedaXion — ¡éxitos en el estudio! 🧠\n\n"
                     "— Equipo RedaXion"
                 )
-                enviar_correo_con_adjuntos(correo_cliente, asunto, cuerpo, archivos_adjuntos)
-                print(f"[MAIN] Correo enviado a {correo_cliente}")
+                try:
+                    enviar_correo_con_adjuntos(correo_cliente, asunto, cuerpo, archivos_adjuntos)
+                    print(f"[MAIN] Correo enviado a {correo_cliente}")
+                except Exception as e:
+                    print(f"[MAIN][WARN] No se pudo enviar correo: {e}")
             else:
                 print("[MAIN] enviar_correo_con_adjuntos helper no disponible o correo_cliente vacío; correo no enviado.")
         except Exception:
@@ -448,7 +448,6 @@ def generate_and_deliver(order_id, *args, **kwargs):
     except Exception as err:
         print(f"[MAIN][ERROR] Excepción en generate_and_deliver para {order_id}: {err}")
         traceback.print_exc()
-        # marcar en sheet como error si es posible
         try:
             if actualizar_estado_y_links:
                 actualizar_estado_y_links(order_id, estado=f"Error: {err}")
@@ -456,9 +455,18 @@ def generate_and_deliver(order_id, *args, **kwargs):
             pass
         return False
 
+    finally:
+        # limpiar tmp_dir si existe
+        try:
+            if tmp_dir and os.path.isdir(tmp_dir):
+                shutil.rmtree(tmp_dir)
+                print(f"[MAIN] tmp_dir {tmp_dir} eliminado.")
+        except Exception as e:
+            print(f"[MAIN][WARN] No se pudo eliminar tmp_dir {tmp_dir}: {e}")
+            traceback.print_exc()
+
 # Mantener compatibilidad (si el worker importa main.generate_and_deliver)
 if __name__ == "__main__":
-    # Si ejecutas main.py manualmente, procesa todos los pendientes (opcional)
     try:
         print("🚀 Ejecutando flujo RedaXion en modo standalone (procesar pendientes)")
         if get_todos_los_pendientes:
