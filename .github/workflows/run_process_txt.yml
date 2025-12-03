@@ -18,14 +18,15 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install deps (ensure openai v1+)
+      - name: Install deps (ensure openai v1+ and requests)
         run: |
           python -m pip install --upgrade pip
-          # Install new OpenAI client (v1+). Use a concrete recent version to avoid surprises:
-          pip install "openai>=1.0.0"
-          # then install project deps (if any)
+          pip install "openai>=1.0.0" requests backoff || true
           if [ -f requirements.txt ]; then pip install -r requirements.txt || true; fi
-          pip install backoff requests redis sendgrid || true
+
+      - name: Validate OPENAI key & connectivity (safety checks)
+        run: |
+          python validate_openai_key.py
 
       - name: Run process_txt test
         run: |
